@@ -161,16 +161,23 @@ a buffer or region."
 ;;
 
 (defun coffee-comint-filter (string)
-  (ansi-color-apply
-   (replace-regexp-in-string
-    "\uFF00" "\n"
-    (replace-regexp-in-string "\x1b\\[.[GJK]" "" string))))
+  "Filter extra escape sequences from output."
+  (let ((beg (or comint-last-output-start
+                 (point-min-marker)))
+        (end (process-mark (get-buffer-process (current-buffer)))))
+    (save-excursion
+      (goto-char beg)
+      (while (re-search-forward
+              "\\(\x1b\\[[0-9]+[GJK]\\|^[ \t]*undefined[\r\n]+\\)" end t)
+        (replace-match "")))))
 
 (defun coffee-repl ()
   "Launch a CoffeeScript REPL using `coffee-command' as an inferior mode."
   (interactive)
 
   (unless (comint-check-proc coffee-repl-buffer)
+    (setenv "PAGER" (executable-find "cat"))
+    (setenv "NODE_NO_READLINE" "1")
     (set-buffer
      (apply 'make-comint "CoffeeREPL"
             "env"
@@ -178,8 +185,9 @@ a buffer or region."
             "NODE_NO_READLINE=1"
             coffee-command
             coffee-args-repl))
-    ;; Workaround for ansi colors
-    (add-hook 'comint-preoutput-filter-functions 'coffee-comint-filter nil t))
+    (inf-coffee-mode)
+    (unless (and coffee-repl-buffer (comint-check-proc coffee-repl-buffer))
+      (setq coffee-repl-buffer (current-buffer))))
 
   (pop-to-buffer coffee-repl-buffer))
 
@@ -1290,6 +1298,45 @@ comments such as the following:
 
   ;; no tabs
   (setq indent-tabs-mode coffee-indent-tabs-mode))
+
+(defvar inf-coffee-prompt "^[^>\n[:space:]]*> *")
+
+(defvar inf-coffee-mode-map
+  (let ((map (copy-keymap comint-mode-map)))
+    (define-key map (kbd "TAB") 'completion-at-point)
+    map)
+  "Mode map for `inf-coffee-mode'.")
+
+(defun coffee-get-old-input nil
+  ;; Return the previous input surrounding point
+  (save-excursion
+    (beginning-of-line)
+    (unless (looking-at-p comint-prompt-regexp)
+      (re-search-backward comint-prompt-regexp))
+    (comint-skip-prompt)
+    (buffer-substring (point) (progn (forward-sexp 1) (point)))))
+
+(define-derived-mode inf-coffee-mode comint-mode "Inf-Coffee"
+  "Major mode for interacting with an inferior Coffee REPL process."
+  :syntax-table coffee-mode-syntax-table
+  (set (make-local-variable 'indent-tabs-mode) nil)
+  (setq-local font-lock-defaults '((coffee-font-lock-keywords)))
+  (setq comint-prompt-regexp inf-coffee-prompt)
+  (set (make-local-variable 'paragraph-separate) "\\'")
+  (set (make-local-variable 'paragraph-start) comint-prompt-regexp)
+  (setq comint-process-echoes nil)
+  (setq comint-input-ignoredups t)
+  (set (make-local-variable 'comint-prompt-read-only) t)
+  (add-hook 'comint-output-filter-functions 'coffee-comint-filter nil t)
+  (add-hook 'comint-preoutput-filter-functions
+            (lambda (output)
+              (replace-regexp-in-string
+               "\\(\x1b\\[[0-9]+[GJK]\\|^[ \t]*undefined[\r\n]+\\)" ""
+               output))
+            nil t)
+  (setq comint-get-old-input 'coffee-get-old-input)
+  (use-local-map inf-coffee-mode-map)
+  (ansi-color-for-comint-mode-on))
 
 ;;
 ;; Compile-on-Save minor mode
